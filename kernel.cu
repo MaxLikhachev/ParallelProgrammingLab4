@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 #include <iostream>
-#include <cmath>
+#include <omp.h>
 
 using namespace std;
 
@@ -12,13 +12,24 @@ using namespace std;
 
 const float eps = 0.000001;
 
-cudaError_t calculateWithCuda(float* c, float* a, float* b, unsigned int size);
+cudaError_t calculateWithCuda(float* matrix, unsigned int size);
 
 __global__ void globalCalculateKernel(float* c, float* a, float* b)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     c[i * j] = sin(a[i * j]) * sin(a[i * j]) + cos(b[i * j]) * cos(b[i * j]) * cos(b[i * j]);
+}
+
+__global__ void sumKernel(float* matrix, float* sum, float* result, float* temp)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    // if (i != j)
+        // sum += matrix[i * j] * result[j];
+
+    // temp[i] = (matrix[i * size + size] - sum) / matrix[i * size + i];
+    // c[i * j] = sin(a[i * j]) * sin(a[i * j]) + cos(b[i * j]) * cos(b[i * j]) * cos(b[i * j]);
 }
 
 bool isDiverged(float* result, float* temp, unsigned int size)
@@ -77,6 +88,37 @@ void display(int arraySize, float* a)
     }
 }
 
+float* parallelOpenMPCalculate(float* matrix, unsigned int size)
+{
+    float* result = new float[size];
+    float* temp = new float[size];
+    initNull(size, result);
+    initNull(size, temp);
+
+    int count = 0;
+    for (bool flag = !isDiagonalDominanceBroken(matrix, size); flag; count++)
+    {
+#pragma omp parallel for
+        for (int i = 0; i < size; i++)
+        {
+            float sum = 0.0;
+            {
+#pragma omp parallel for
+                for (int j = 0; j < size; j++)
+                    if (i != j)
+                        sum += matrix[i * size + j] * result[j];
+                temp[i] = (matrix[i * size + size] - sum) / matrix[i * size + i];
+            }
+        }
+        flag = !isDiverged(result, temp, size);
+        if (flag)
+            for (int i = 0; i < size; i++)
+                result[i] = temp[i];
+    }
+    cout << "Parallel OpenMP count: " << count;
+    return result;
+}
+
 float* sequentialCalculate(float* matrix, unsigned int size)
 {
     float* result = new float[size];
@@ -100,8 +142,7 @@ float* sequentialCalculate(float* matrix, unsigned int size)
             for (int i = 0; i < size; i++)
                 result[i] = temp[i];
     }
-    // globalCount = count;
-    cout << "Count: " << count;
+    cout << "Sequential calculate count: " << count;
     return result;
 }
 
@@ -118,7 +159,31 @@ int main()
     initRandom(arraySize, matrix);
     // display(arraySize, matrix);
 
+    cudaEvent_t start, stop;
+    float KernelTime;
+
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start, 0);
+
     sequentialCalculate(matrix, arraySize);
+
+    cudaThreadSynchronize();
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&KernelTime, start, stop);
+    printf("\nSequential calculate time:  %0.2f ms \n", KernelTime);
+
+    cudaEventRecord(start, 0);
+
+    parallelOpenMPCalculate(matrix, arraySize);
+
+    cudaThreadSynchronize();
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&KernelTime, start, stop);
+    printf("\nParallel OpenMP calculate time:  %0.2f ms \n", KernelTime);
 
     // Add matrixes in parallel.
     /*
@@ -141,11 +206,9 @@ int main()
 
 
 // Helper function for using CUDA to add matrixes in parallel.
-cudaError_t calculateWithCuda(float* c, float* a, float* b, unsigned int size)
+cudaError_t calculateWithCuda(float* matrix, unsigned int size)
 {
-    float* dev_a;
-    float* dev_b;
-    float* dev_c;
+    float* dev_matrix;
 
     cudaError_t cudaStatus;
     cudaEvent_t start, stop;
@@ -161,25 +224,14 @@ cudaError_t calculateWithCuda(float* c, float* a, float* b, unsigned int size)
         goto Error;
     }
 
-    // Allocate GPU buffers for three matrixes (two input, one output).
+    // Allocate GPU buffers for matrix.
     cudaEventRecord(start, 0);
-    cudaStatus = cudaMalloc((void**)&dev_c, (N * N) * sizeof(float));
+    cudaStatus = cudaMalloc((void**)&dev_matrix, (N * N) * sizeof(float));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
 
-    cudaStatus = cudaMalloc((void**)&dev_a, (N * N) * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&dev_b, (N * N) * sizeof(float));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
     cudaThreadSynchronize();
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
@@ -188,22 +240,18 @@ cudaError_t calculateWithCuda(float* c, float* a, float* b, unsigned int size)
 
     // Copy input matrixes from host memory to GPU buffers.
     cudaEventRecord(start, 0);
-    cudaStatus = cudaMemcpy(dev_a, a, (N * N) * sizeof(float), cudaMemcpyHostToDevice);
+
+    cudaStatus = cudaMemcpy(dev_matrix, matrix, (N * N) * sizeof(float), cudaMemcpyHostToDevice);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
     }
 
-    cudaStatus = cudaMemcpy(dev_b, b, (N * N) * sizeof(float), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
     cudaThreadSynchronize();
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&KernelTime, start, stop);
-    printf("\nCopying input matrixes: host -> GPU  time:  %0.2f ms \n", KernelTime);
+    printf("\nCopying matrix: host -> GPU  time:  %0.2f ms \n", KernelTime);
 
     // Launch a kernel on the GPU with one thread for each element.
     int numBlocks = BLOCK_SIZE;
@@ -212,7 +260,7 @@ cudaError_t calculateWithCuda(float* c, float* a, float* b, unsigned int size)
 
     // Global memory
     cudaEventRecord(start, 0);
-    globalCalculateKernel << <numBlocks, threadsPerBlock >> > (dev_c, dev_a, dev_b);
+    // globalCalculateKernel << <numBlocks, threadsPerBlock >> > (dev_c, dev_a, dev_b);
     cudaThreadSynchronize();
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
@@ -237,7 +285,7 @@ cudaError_t calculateWithCuda(float* c, float* a, float* b, unsigned int size)
 
     // Copy output matrix from GPU buffer to host memory.
     cudaEventRecord(start, 0);
-    cudaStatus = cudaMemcpy(c, dev_c, (N * N) * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaStatus = cudaMemcpy(matrix, dev_matrix, (N * N) * sizeof(float), cudaMemcpyDeviceToHost);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
@@ -249,9 +297,7 @@ cudaError_t calculateWithCuda(float* c, float* a, float* b, unsigned int size)
     printf("\nCopying output matri: GPU -> host time:  %0.2f ms \n", KernelTime);
 
 Error:
-    cudaFree(dev_c);
-    cudaFree(dev_a);
-    cudaFree(dev_b);
+    cudaFree(dev_matrix);
 
     return cudaStatus;
 }
