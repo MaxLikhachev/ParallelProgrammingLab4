@@ -192,9 +192,144 @@ void sequentialCalculate(int vectorSize, float* alpha, float* beta, float* prev,
     cout << "Finished with iterations count: " << count;
 }
 
+cudaError_t parallelCudaCalculate(int vectorSize, float* alpha, float* beta, float* prev, float* curr)
+{
+    float* dev_alpha;
+    float* dev_beta;
+    float* dev_prev;
+    float* dev_curr;
+    
+    cudaError_t cudaStatus;
+    cudaEvent_t start, stop;
+    
+    // Choose which GPU to run on, change this on a multi-GPU system.
+    cudaStatus = cudaSetDevice(0);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
+        goto Error;
+    }
+
+    // Allocate GPU buffers for matrix.
+    cudaStatus = cudaMalloc((void**)&dev_alpha, (N * N) * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&dev_beta, N * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&dev_prev, N * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMalloc((void**)&dev_curr, N * sizeof(float));
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+
+
+    // Copy input matrixes from host memory to GPU buffers.
+    cudaStatus = cudaMemcpy(dev_alpha, alpha, (N * N) * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMemcpy(dev_beta, beta, N * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMemcpy(dev_prev, prev, N * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+    cudaStatus = cudaMemcpy(dev_curr, curr, N * sizeof(float), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+
+    // Launch a kernel on the GPU with one thread for each element.
+    int numBlocks = BLOCK_SIZE;
+    dim3 threadsPerBlock(N, N);
+    // cout << "\nConfig settings: arraySize = " << size << ", numBlocks = " << numBlocks << ", threadsPerBlock(" << N << ", " << N << ")\n";
+
+    // Global memory
+
+    // isDiagonalDominanceBrokenGlobal << <1, 1 >> > (dev_alpha, size, dev_flag);
+   // for (; dev_flag; dev_count++)
+    int count = 0, criticalCount = CRITICAL_COUNT;
+    for (count = 0; count < criticalCount; count++)
+    {
+    }
+    cout << "Finished with iterations count: " << count;
+
+    // cout << "\nGlobal result: " << KernelTime <<  " milliseconds\n";
+
+    // Check for any errors launching the kernel
+    cudaStatus = cudaGetLastError();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "globalCalculateKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+        goto Error;
+    }
+
+    // cudaDeviceSynchronize waits for the kernel to finish, and returns
+    // any errors encountered during the launch.
+    cudaStatus = cudaDeviceSynchronize();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching globalCalculateKernel!\n", cudaStatus);
+        goto Error;
+    }
+
+    // Copy output array from GPU buffer to host memory.
+    cudaStatus = cudaMemcpy(alpha, dev_alpha, (N * N) * sizeof(float), cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(beta, dev_beta, N * sizeof(float), cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(curr, dev_curr, N * sizeof(float), cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(prev, dev_prev, N * sizeof(float), cudaMemcpyDeviceToHost);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+
+
+Error:
+    cudaFree(dev_alpha);
+    cudaFree(dev_beta);
+    cudaFree(dev_prev);
+    cudaFree(dev_curr);
+
+    return cudaStatus;
+}
+
 int main()
 {
     srand(time(NULL));
+    cudaEvent_t start, stop;
+    float KernelTime;
 
     cout << "Enter matrix size: ";
     int matrixSize = 0;
@@ -212,17 +347,11 @@ int main()
 
     // <-- Sequential method
 
-    cudaEvent_t start, stop;
-    float KernelTime;
-
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-
     cudaEventRecord(start, 0);
-
     sequentialCalculate(matrixSize, alpha, beta, prev, curr);
     cudaThreadSynchronize();
-
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&KernelTime, start, stop);
@@ -232,13 +361,12 @@ int main()
 
     initNull(matrixSize, prev);
     initNull(matrixSize, curr);
-    cudaEventRecord(start, 0);
-
+    
     // <-- Parallel OpenMP method
 
+    cudaEventRecord(start, 0);
     parallelOpenMPCalculate(matrixSize, alpha, beta, prev, curr);
     cudaThreadSynchronize();
-
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&KernelTime, start, stop);
@@ -252,16 +380,25 @@ int main()
     // <-- Parallel CUDA method
 
     cudaEventRecord(start, 0);
-
-    parallelOpenMPCalculate(matrixSize, alpha, beta, prev, curr);
+    cudaError_t cudaStatus = parallelCudaCalculate(matrixSize, alpha, beta, prev, curr);
     cudaThreadSynchronize();
-
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&KernelTime, start, stop);
     cout << "\nParallel OpenMP calculate time: " << KernelTime * 1000 << " mcs\n";
 
+    if (cudaStatus != cudaSuccess) {
+        cout << "calculateWithCuda failed!\n";
+        return 1;
+    }
 
+    // cudaDeviceReset must be called before exiting in order for profiling and
+    // tracing tools such as Nsight and Visual Profiler to show complete traces.
+    cudaStatus = cudaDeviceReset();
+    if (cudaStatus != cudaSuccess) {
+        cout << "cudaDeviceReset failed!\n";
+        return 1;
+    }
     // -- >
 
     return 0;
