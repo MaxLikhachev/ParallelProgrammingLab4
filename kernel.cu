@@ -151,13 +151,16 @@ bool parallelCudaIsComplete(int vectorSize, float* prev, float* curr)
 __global__ void parallelCudaMultiMatrixVectorKernel(float* matrix, float* vector, float* result)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    result[i] += matrix[i * j] * vector[j];
+    float temp = 0;
+    if (i < N)
+        for (int j = 0; j < N; j++)
+            temp += matrix[i * N + j] * vector[j];
+    result[i] = temp;
 }
 
 __global__ void parallelCudaSubVectorsKernel(float* vectorL, float* vectorR, float* result)
 {
-    int i = threadIdx.x;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
     result[i] = vectorL[i] - vectorR[i];
 }
 
@@ -317,8 +320,11 @@ cudaError_t parallelCudaCalculate(int vectorSize, float* alpha, float* beta, flo
     }
 
     // Launch a kernel on the GPU with one thread for each element.
-    int numBlocks = BLOCK_SIZE;
-    dim3 threadsPerBlock(N, N);
+    int blockSize, gridSize;
+    // Number of threads in each thread block
+    blockSize = 1024;
+    // Number of thread blocks in grid
+    gridSize = (int)ceil((float)N / blockSize);
 
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -328,7 +334,7 @@ cudaError_t parallelCudaCalculate(int vectorSize, float* alpha, float* beta, flo
     int count = 0, criticalCount = CRITICAL_COUNT;
     for (count = 0; count < criticalCount; count++)
     {
-        parallelCudaMultiMatrixVectorKernel << <numBlocks, threadsPerBlock >> > (alpha, prev, curr);
+        // parallelCudaMultiMatrixVectorKernel << <gridSize, blockSize >> > (alpha, prev, curr);
         // Check for any errors launching the kernel
         cudaStatus = cudaGetLastError();
         if (cudaStatus != cudaSuccess) {
@@ -342,7 +348,7 @@ cudaError_t parallelCudaCalculate(int vectorSize, float* alpha, float* beta, flo
             fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching parallelCudaMultiMatrixVectorKernel!\n", cudaStatus);
             goto Error;
         }
-        parallelCudaSubVectorsKernel << <numBlocks, threadsPerBlock >> > (beta, curr, curr);
+        parallelCudaSubVectorsKernel << <gridSize, blockSize >> > (beta, curr, curr);
         // Check for any errors launching the kernel
         cudaStatus = cudaGetLastError();
         if (cudaStatus != cudaSuccess) {
@@ -374,7 +380,7 @@ cudaError_t parallelCudaCalculate(int vectorSize, float* alpha, float* beta, flo
             goto Error;
         }
 
-        parallelCudaCopyVectorsKernel << <numBlocks, threadsPerBlock >> > (curr, prev);
+        parallelCudaCopyVectorsKernel << <gridSize, blockSize >> > (curr, prev);
         // Check for any errors launching the kernel
         cudaStatus = cudaGetLastError();
         if (cudaStatus != cudaSuccess) {
