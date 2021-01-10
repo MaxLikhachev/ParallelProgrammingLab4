@@ -283,6 +283,8 @@ int main()
     srand(time(NULL));
     cudaEvent_t start, stop;
     float KernelTime;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
 
     cout << "Enter matrix size: ";
     int matrixSize = 0;
@@ -299,8 +301,6 @@ int main()
     init(matrixSize, matrix, basis, prev, curr, alpha, beta);
 
     // <-- Sequential method
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
     sequentialCalculate(matrixSize, alpha, beta, prev, curr);
@@ -310,15 +310,13 @@ int main()
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&KernelTime, start, stop);
 
-    cout << " by time: " << KernelTime << " ms\n";
+    cout << " by time: " << round(KernelTime * 100) / 100 << " ms\n";
     // -- >
 
     initNull(matrixSize, prev);
     initNull(matrixSize, curr);
     
     // <-- Parallel OpenMP method
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
     parallelOpenMPCalculate(matrixSize, alpha, beta, prev, curr);
@@ -328,15 +326,13 @@ int main()
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&KernelTime, start, stop);
 
-    cout << " by time: " << KernelTime << " ms\n";
+    cout << " by time: " << round(KernelTime * 100) / 100 << " ms\n";
     // -- >
 
     initNull(matrixSize, prev);
     initNull(matrixSize, curr);
 
     // <-- Parallel CUDA method
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
     parallelCudaCalculate(matrixSize, alpha, beta, prev, curr);
@@ -346,7 +342,7 @@ int main()
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&KernelTime, start, stop);
 
-    cout << " by time: " << KernelTime << " ms\n";
+    cout << " by time: " << round(KernelTime * 100) / 100 << " ms\n";
     // -- >
 
     return 0;
